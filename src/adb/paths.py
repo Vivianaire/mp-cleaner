@@ -29,14 +29,30 @@ SDCARD = "/sdcard"
 ANDROID_DATA = f"{SCAN_ROOT}/Android/data"
 ANDROID_OBB = f"{SCAN_ROOT}/Android/obb"
 
+# 工具自带回收站根目录(安全删除时移动至此,可恢复/过期/清空)
+TRASH_DIR = f"{SCAN_ROOT}/.mp_cleaner/.trash"
+# 扫描时排除的路径(回收站自身 + 工具元目录)
+EXCLUDE_PATHS = (f"{SCAN_ROOT}/.mp_cleaner",)
+
 # find -printf 字段:路径|字节数|ls类型权限|mtime(unix 秒,带小数)
 # %M 首字符标识类型:d=目录 -=普通文件 l=符号链接 c/b/p=设备/管道等
 SCAN_PRINTF_FMT = "%p|%s|%M|%T@"
 
 
-def scan_command(root: str = SCAN_ROOT, maxdepth: int = 6) -> str:
+def scan_command(root: str = SCAN_ROOT, maxdepth: int | None = None) -> str:
     """生成全盘元数据扫描命令(单行字符串,供 ``adb shell`` 执行)。
 
-    返回的串里 ``\\n`` 是字面反斜杠+n,经 adb 传到设备 find 后被解释为换行。
+    ``maxdepth=None`` 表示无深度限制(全深扫描)。自动 ``-prune`` 掉工具回收站目录,
+    防止回收站内容被当成垃圾重复计入。返回串里 ``\\n`` 是字面反斜杠+n。
     """
-    return rf"find {root} -mindepth 1 -maxdepth {maxdepth} -printf '{SCAN_PRINTF_FMT}\n'"
+    md = f"-maxdepth {maxdepth} " if maxdepth else ""
+    prune = ""
+    for ex in EXCLUDE_PATHS:
+        if ex.startswith(root):
+            prune += f"-path '{ex}' -prune -o "
+    return rf"find {root} -mindepth 1 {md}{prune}-printf '{SCAN_PRINTF_FMT}\n'"
+
+
+def dirs_command(root: str = SCAN_ROOT) -> str:
+    """仅列目录及其 mtime(增量/缓存重扫的快探命令,条目远少于全量)。"""
+    return rf"find {root} -type d -printf '%p|%T@\n'"

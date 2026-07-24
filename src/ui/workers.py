@@ -9,7 +9,7 @@ import time
 
 from PyQt6 import QtCore
 
-from ..adb import AdbClient, DeviceInfo, SCAN_ROOT, scan_command
+from ..adb import AdbClient, DeviceInfo, SCAN_ROOT
 
 
 class _Worker(QtCore.QThread):
@@ -41,6 +41,7 @@ class DeviceListWorker(_Worker):
                         "brand": self._client.getprop(d.serial, "ro.product.manufacturer"),
                         "model": self._client.getprop(d.serial, "ro.product.model"),
                         "release": self._client.android_release(d.serial),
+                        "storage": self._client.df(d.serial, SCAN_ROOT),
                     }
                 except Exception:
                     props[d.serial] = {}
@@ -50,48 +51,37 @@ class DeviceListWorker(_Worker):
 
 
 class ScannerWorker(_Worker):
-    """流式扫描:跑 ``find -printf``,逐行解析,节流发射 batchReady。
+    """流式扫描:经 ``DeviceBackend.iter_files`` 拉取,节流发射 batchReady。
 
-    每条记录为 ``(abs_path, size, is_file, mtime)``。trie/model 在主线程按批增量
-    构建(单线程访问,免锁)。
+    记录为 ``(abs_path, size, is_file, mtime)``。trie/model 在主线程按批增量构建。
     """
 
     batchReady = QtCore.pyqtSignal(list)                # list[(path, size, is_file, mtime)]
     progress = QtCore.pyqtSignal(int, object)           # files, bytes(bytes 用 object 防 int32 溢出)
-    packagesReady = QtCore.pyqtSignal(list)             # 已装第三方包名(分类用)
+    packagesReady = QtCore.pyqtSignal(list)             # 已装包名(分类用)
     finishedScan = QtCore.pyqtSignal(int, int, object)  # files, dirs, bytes
 
     _BATCH = 4000
     _INTERVAL = 0.05
 
-    def __init__(
-        self,
-        client: AdbClient,
-        serial: str,
-        root: str = SCAN_ROOT,
-        maxdepth: int = 6,
-        parent=None,
-    ):
+    def __init__(self, backend, root: str = SCAN_ROOT, maxdepth: int | None = None, parent=None):
         super().__init__(parent)
-        self._client = client
-        self._serial = serial
-        self._cmd = scan_command(root, maxdepth)
-        self._proc = None
+        self._backend = backend
+        self._root = root
+        self._maxdepth = maxdepth
+        self._cancel = False
 
     def cancel(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
+        self._cancel = True
 
     def run(self) -> None:
         files = dirs = nbytes = 0
         try:
-            self._proc = self._client.shell_popen(self._serial, self._cmd)
             batch: list = []
             last = time.monotonic()
-            for line in self._proc.stdout:
-                rec = self._parse(line)
-                if rec is None:
-                    continue
+            for rec in self._backend.iter_files(self._root, self._maxdepth):
+                if self._cancel:
+                    break
                 _, size, is_file, _ = rec
                 batch.append(rec)
                 if is_file:
@@ -106,45 +96,119 @@ class ScannerWorker(_Worker):
                     last = time.monotonic()
             if batch:
                 self.batchReady.emit(batch)
-            self._proc.wait()
-            # 拉取全量已装包(含系统应用,识别已卸载残留用)
             try:
-                self.packagesReady.emit(self._client.installed_packages(self._serial))
-            except Exception:
+                self.packagesReady.emit(self._backend.installed_packages())
+            except Exception:  # noqa: BLE001
                 self.packagesReady.emit([])
             self.progress.emit(files, nbytes)
             self.finishedScan.emit(files, dirs, nbytes)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 
-    @staticmethod
-    def _parse(line: str):
-        # rsplit 剥出 size|mode|mtime(路径中若含 '|' 也不受影响)
-        line = line.rstrip("\n")
-        if not line:
-            return None
-        parts = line.rsplit("|", 3)
-        if len(parts) != 4:
-            return None
-        path, size_s, mode, mtime_s = parts
-        t = mode[:1]
-        if t == "l":                       # 符号链接:跳过,防环
-            return None
-        is_file = t == "-"
+
+class CacheWorker(_Worker):
+    """后台判定缓存命中:目录签名一致则由 SQLite 快照重建 trie(大快照重建不卡 UI)。"""
+
+    result = QtCore.pyqtSignal(object, bool)   # (trie_or_None, hit)
+
+    def __init__(self, scan_service, root: str, parent=None):
+        super().__init__(parent)
+        self._service = scan_service
+        self._root = root
+
+    def run(self) -> None:
         try:
-            size = int(size_s)
-        except ValueError:
-            return None
-        try:
-            mtime = int(float(mtime_s))
-        except ValueError:
-            mtime = 0
-        return (path, size, is_file, mtime)
+            trie = self._service.try_cached(self._root)
+            self.result.emit(trie, trie is not None)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
 
 
 def _shell_quote(p: str) -> str:
     """单引号包裹路径,转义内嵌单引号。"""
     return "'" + p.replace("'", "'\\''") + "'"
+
+
+def _is_safe_path(p: str, root: str) -> bool:
+    r = root.rstrip("/")
+    if not p.startswith(r + "/"):
+        return False
+    if p == r:
+        return False
+    if ".." in p.split("/"):
+        return False
+    return True
+
+
+class CleanToTrashWorker(_Worker):
+    """默认安全清理:受保护项跳过,安全项 ``mv`` 入回收站(可恢复)。"""
+
+    progress = QtCore.pyqtSignal(int, int, str)         # done, total, path
+    result = QtCore.pyqtSignal(int, int, int, object)   # moved, skipped, failed, freed
+
+    def __init__(self, backend, store, items, root, parent=None):
+        super().__init__(parent)
+        self._backend = backend
+        self._store = store
+        self._items = items
+        self._root = root
+
+    def run(self) -> None:
+        from ..cleaner import mark_protected
+        from ..services import trash_service
+
+        moved = skipped = failed = 0
+        freed = 0
+        try:
+            try:
+                protected = self._backend.foreground_packages()
+            except Exception:  # noqa: BLE001
+                protected = set()
+            mark_protected(self._items, protected)
+
+            todo = [
+                it for it in self._items
+                if not it.protected and _is_safe_path(it.path, self._root)
+            ]
+            skipped = len(self._items) - len(todo)
+            total = len(todo)
+            for i, it in enumerate(todo, 1):
+                self.progress.emit(i, total, it.path)
+                try:
+                    trash_service.move_to_trash(self._backend, self._store, it)
+                    moved += 1
+                    freed += it.size
+                except Exception:  # noqa: BLE001
+                    failed += 1
+            self.result.emit(moved, skipped, failed, freed)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class PhoneTrashWorker(_Worker):
+    """检测 / 清空手机自带回收站。op='detect'|'empty'(empty 时带 target)。"""
+
+    detected = QtCore.pyqtSignal(list)                  # detect 结果
+    emptied = QtCore.pyqtSignal(int)                    # empty 释放字节
+
+    def __init__(self, backend, op: str, target=None, parent=None):
+        super().__init__(parent)
+        self._backend = backend
+        self._op = op
+        self._target = target
+
+    def run(self) -> None:
+        from ..services import trash_service
+
+        try:
+            if self._op == "detect":
+                self.detected.emit(trash_service.detect_phone_trash(self._backend))
+            elif self._op == "empty":
+                self.emptied.emit(
+                    trash_service.empty_phone_trash(self._backend, self._target)
+                )
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
 
 
 class CleanerWorker(_Worker):

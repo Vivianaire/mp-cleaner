@@ -13,7 +13,7 @@ from __future__ import annotations
 class Node:
     __slots__ = (
         "name", "children", "is_file", "own_size", "total",
-        "mtime", "dir_size", "risk", "parent",
+        "mtime", "own_mtime", "dir_size", "risk", "parent",
         "_sorted", "_sorted_gen",
     )
 
@@ -23,7 +23,8 @@ class Node:
         self.is_file = False
         self.own_size = 0          # 文件:自身字节;目录:0
         self.total = 0             # 子树所有文件字节之和(含自身若为文件)
-        self.mtime = 0             # 最新 mtime(unix 秒)
+        self.mtime = 0             # 子树最新 mtime(陈旧判定用)
+        self.own_mtime = 0         # 该节点**自身** mtime(快照签名/持久化用)
         self.dir_size = 0          # 目录:块大小(仅展示,不计入 total)
         self.risk: str | None = None   # M4 分类标签
         self.parent: "Node | None" = None
@@ -70,6 +71,7 @@ class FileTrie:
             chain.append(node)
 
         node.is_file = is_file
+        node.own_mtime = mtime                 # 自身 mtime(不被子孙改写)
         if mtime > node.mtime:
             node.mtime = mtime
         if is_file:
@@ -97,3 +99,30 @@ class FileTrie:
     @property
     def total_bytes(self) -> int:
         return self.root.total
+
+    # --- 持久化 ---
+    def iter_nodes(self):
+        """yield (abs_path, size, mtime, is_file);size 对目录为 0。
+
+        跳过根节点自身(根名即扫描前缀,不是被扫条目)。用于写 SQLite 快照。
+        """
+        stack: list[Node] = [self.root]
+        while stack:
+            n = stack.pop()
+            if n is not self.root:
+                yield (
+                    n.abs_path(),
+                    n.own_size if n.is_file else 0,
+                    n.own_mtime,
+                    n.is_file,
+                )
+            if n.children:
+                stack.extend(n.children.values())
+
+    @classmethod
+    def from_records(cls, root_prefix: str, records) -> "FileTrie":
+        """从 (path,size,is_file,mtime) 序列重建 trie(如 SQLite 快照)。"""
+        trie = cls(root_prefix)
+        for path, size, is_file, mtime in records:
+            trie.insert(path, size, is_file, mtime)
+        return trie

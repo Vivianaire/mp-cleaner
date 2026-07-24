@@ -2,5 +2,8 @@
 __pycache__/
 *.pyc
 
+# per-device 运行时数据(SQLite 快照/回收站清单)
+data/
+
 # adb 平台工具(体积大,按 README 重新下载解压即可)
 platform-tools/

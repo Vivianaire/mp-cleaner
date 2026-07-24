@@ -4,6 +4,7 @@ from __future__ import annotations
 from PyQt6 import QtCore, QtWidgets
 
 from ...adb import AdbClient, DeviceInfo
+from ...utils import human_size
 from ..workers import DeviceListWorker
 
 
@@ -17,6 +18,7 @@ class DevicePanel(QtWidgets.QWidget):
         self._client = client
         self._worker: DeviceListWorker | None = None
         self._current: DeviceInfo | None = None
+        self._props: dict = {}
 
         self.combo = QtWidgets.QComboBox()
         self.combo.setMinimumWidth(280)
@@ -44,6 +46,13 @@ class DevicePanel(QtWidgets.QWidget):
     def current_device(self) -> DeviceInfo | None:
         return self._current
 
+    def current_storage(self):
+        """当前设备的 (total,used,avail) 或 None。"""
+        d = self._current
+        if d and d.serial in self._props:
+            return self._props[d.serial].get("storage")
+        return None
+
     # --- slots ---
     def refresh(self) -> None:
         self.refresh_btn.setEnabled(False)
@@ -56,6 +65,7 @@ class DevicePanel(QtWidgets.QWidget):
         self._worker.start()
 
     def _on_devices(self, devs: list, props: dict) -> None:
+        self._props = props or {}
         authorized = [d for d in devs if d.authorized]
         self.combo.blockSignals(True)
         self.combo.clear()
@@ -84,8 +94,17 @@ class DevicePanel(QtWidgets.QWidget):
             brand = info.get("brand", "")
             model = info.get("model", d.model)
             release = info.get("release", "")
+            storage = info.get("storage")
+            store_str = ""
+            if storage:
+                total, used, avail = storage
+                pct = used * 100 / total if total else 0
+                store_str = (
+                    f"   |   存储 {human_size(used)}/{human_size(total)}"
+                    f" ({pct:.0f}%,可用 {human_size(avail)})"
+                )
             self.detail_lbl.setText(
-                f"{brand} {model}   Android {release}   serial {d.serial}"
+                f"{brand} {model} · Android {release} · serial {d.serial}{store_str}"
             )
         else:
             self.detail_lbl.setText(

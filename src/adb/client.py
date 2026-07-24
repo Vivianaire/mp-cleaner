@@ -140,3 +140,22 @@ class AdbClient:
 
     def third_party_packages(self, serial: str) -> list[str]:
         return self._packages(serial, "-3")
+
+    def df(self, serial: str, path: str) -> tuple[int, int, int] | None:
+        """``df -k <path>`` -> (total, used, available) 字节数;失败返回 None。"""
+        out = self.shell(serial, f"df -k {path}", timeout=15)
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("filesystem"):
+                continue
+            parts = line.split()
+            # [/dev/fuse, 1K-blocks, used, avail, use%, mount]
+            if len(parts) >= 4:
+                try:
+                    total = int(parts[1]) * 1024
+                    used = int(parts[2]) * 1024
+                    avail = int(parts[3]) * 1024
+                    return (total, used, avail)
+                except ValueError:
+                    continue
+        return None

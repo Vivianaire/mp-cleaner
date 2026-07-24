@@ -12,6 +12,12 @@ from src.ui.main_window import MainWindow
 
 
 def main() -> int:
+    # Windows 控制台默认 GBK,强制 utf-8 避免 emoji/中文日志触发 UnicodeEncodeError
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("mp-cleaner")
     app.setApplicationDisplayName("可视化手机清理")
