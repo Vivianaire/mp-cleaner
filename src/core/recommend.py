@@ -45,8 +45,8 @@ def generate(junk_items) -> list[Recommendation]:
         recs.append(
             Recommendation(
                 "review_dup", "审视重复文件",
-                f"{len(dup)} 个疑似重复(按大小预筛,需人工确认)",
-                sum(i.size for i in dup) // 2 or 0, "中等", dup, auto=False,
+                f"{len(dup)} 个疑似重复(已采样哈希复核,需人工确认)",
+                sum(i.size for i in dup) // 2, "中等", dup, auto=False,
             )
         )
     recs.sort(key=lambda r: -r.reclaimable)

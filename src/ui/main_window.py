@@ -20,11 +20,18 @@ from ..utils import human_size
 from .views.dashboard import DashboardView
 from .views.recommendations import RecommendationsView
 from .views.trash_view import TrashView
+from .views.trends import TrendsView
 from .widgets.chart_panel import ChartPanel
 from .widgets.device_panel import DevicePanel
 from .widgets.junk_panel import JunkPanel
 from .widgets.space_tree import SpaceTreeView
-from .workers import CacheWorker, CleanToTrashWorker, ScannerWorker
+from .workers import (
+    AppAnalysisWorker,
+    CacheWorker,
+    CleanToTrashWorker,
+    DedupWorker,
+    ScannerWorker,
+)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -48,6 +55,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_worker: ScannerWorker | None = None
         self._cache_worker: CacheWorker | None = None
         self._clean_worker: CleanToTrashWorker | None = None
+        self._analysis_worker: AppAnalysisWorker | None = None
+        self._dedup_worker: DedupWorker | None = None
+        self._junk_items: list = []
+        self._auto_scan_done = False
         self._installed_pkgs: list[str] = []
         self._ui_timer = QtCore.QTimer(self)
         self._ui_timer.setInterval(250)
@@ -96,6 +107,9 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda _k: self.tabs.setCurrentIndex(2)
         )
         self.tabs.addTab(self.recs_view, "💡 建议")
+        # 趋势(历次扫描占用走势)
+        self.trends_view = TrendsView()
+        self.tabs.addTab(self.trends_view, "📈 趋势")
         outer.addWidget(self.tabs, 1)
 
     def _build_toolbar(self) -> None:
@@ -118,27 +132,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_clean.triggered.connect(self.clean)
         self.act_clean.setEnabled(False)
 
+        self.act_cancel = QtGui.QAction("⏹ 取消", self)
+        self.act_cancel.setShortcut("Esc")
+        self.act_cancel.triggered.connect(self._cancel_scan)
+        self.act_cancel.setEnabled(False)
+
+        self.act_export = QtGui.QAction("📤 导出报告", self)
+        self.act_export.triggered.connect(self._export_report)
+        self.act_export.setEnabled(False)
+
         tb.addAction(self.act_scan)
         tb.addAction(self.act_scan_force)
+        tb.addAction(self.act_cancel)
         tb.addAction(self.act_clean)
+        tb.addSeparator()
+        tb.addAction(self.act_export)
 
     # --- 设备 ---
     def _on_device_changed(self, device) -> None:
         ready = bool(device and device.authorized)
         self.act_scan.setEnabled(ready)
         self.act_scan_force.setEnabled(ready)
+        # 切设备前关掉上一台的 SQLite 连接,避免连接泄漏
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._store = None
         if ready:
             self._backend = AdbShellBackend(self.client, device.serial)
             self._store = Store(db_path_for(device.serial))
             self._scan_service = ScanService(self._backend, self._store)
             self.trash_view.set_services(self._backend, self._store)
+            self.trends_view.set_store(self._store)
             cached = self._scan_service.has_snapshot(SCAN_ROOT)
             self.statusBar().showMessage(
                 f"已连接:{device.model or device.serial}"
                 + ("（有历史快照,可缓存重扫）" if cached else "")
             )
+            # 首次连接自动扫一遍(仅一次;之后切设备/重连不自动扫)
+            if not self._auto_scan_done:
+                self._auto_scan_done = True
+                QtCore.QTimer.singleShot(0, self.scan)
         else:
-            self._backend = self._store = self._scan_service = None
+            self._backend = self._scan_service = None
 
     # --- 扫描 ---
     def scan(self, force_full: bool = False) -> None:
@@ -178,6 +216,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tree_model = TreeModel(self.trie)
         self.tree_view.set_scan_model(self.tree_model)
         self.statusBar().showMessage("全深扫描中…")
+        self.act_cancel.setEnabled(True)
         self._scan_worker = ScannerWorker(self._backend, SCAN_ROOT, maxdepth=None)
         self._scan_worker.batchReady.connect(self._on_scan_batch)
         self._scan_worker.progress.connect(self._on_scan_progress)
@@ -186,6 +225,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_worker.failed.connect(self._on_scan_fail)
         self._ui_timer.start()
         self._scan_worker.start()
+
+    def _cancel_scan(self) -> None:
+        if self._scan_worker and self._scan_worker.isRunning():
+            self._scan_worker.cancel()
+            self.act_cancel.setEnabled(False)
+            self.statusBar().showMessage("正在取消扫描…(保留已扫部分)")
 
     def _finish_scan_ui(
         self, trie, packages, files, dirs, nbytes, source: str = "full"
@@ -198,6 +243,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tree_view.expandToDepth(0)
 
         items = classify(trie, packages, time.time())
+        self._junk_items = items
         self.junk_panel.set_items(items)
         self.act_clean.setEnabled(len(items) > 0)
 
@@ -205,9 +251,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dashboard.set_data(trie, self.device_panel.current_storage(), items)
         # 自动分析建议(v2.4)
         self.recs_view.set_recs(gen_recommendations(items))
+        # 趋势历史刷新
+        self.trends_view.refresh()
 
         self.act_scan.setEnabled(True)
         self.act_scan_force.setEnabled(True)
+        self.act_cancel.setEnabled(False)
+        self.act_export.setEnabled(True)
         self.act_scan.setText("▶ 重新扫描")
         tag = "（缓存命中,秒级）" if source == "cached" else ""
         self.statusBar().showMessage(
@@ -215,6 +265,46 @@ class MainWindow(QtWidgets.QMainWindow):
             f"   ·   可清理项 {len(items)} 条",
             0,
         )
+        # 深度分析(diskstats/idle)+ 重复文件采样哈希复核,均后台跑
+        self._start_deep_analysis(items)
+
+    # --- 深度分析(纯 ADB)---
+    def _start_deep_analysis(self, items) -> None:
+        if not self._backend:
+            return
+        self._analysis_worker = AppAnalysisWorker(self._backend, parent=self)
+        self._analysis_worker.result.connect(self.dashboard.set_app_usage)
+        self._analysis_worker.failed.connect(lambda _m: None)
+        self._analysis_worker.finished.connect(self._analysis_worker.deleteLater)
+        self._analysis_worker.start()
+
+        dups = [it for it in items if it.category == "重复文件"]
+        if dups:
+            self._dedup_worker = DedupWorker(self._backend, dups, parent=self)
+            self._dedup_worker.result.connect(self._on_dedup_result)
+            self._dedup_worker.failed.connect(lambda _m: None)
+            self._dedup_worker.finished.connect(self._dedup_worker.deleteLater)
+            self._dedup_worker.start()
+
+    def _on_dedup_result(self, true_dups: list) -> None:
+        """采样哈希复核后:用真重复替换掉「按大小预筛」的重复项。"""
+        true_ids = {id(it.node) for it in true_dups}
+        refined = [
+            it for it in self._junk_items
+            if it.category != "重复文件" or id(it.node) in true_ids
+        ]
+        removed = len(self._junk_items) - len(refined)
+        self._junk_items = refined
+        self.junk_panel.set_items(refined)
+        self.dashboard.set_data(
+            self.trie, self.device_panel.current_storage(), refined
+        )
+        self.recs_view.set_recs(gen_recommendations(refined))
+        self.act_clean.setEnabled(len(refined) > 0)
+        if removed:
+            self.statusBar().showMessage(
+                f"重复文件复核:采样哈希剔除 {removed} 个误判(同大小但内容不同)", 5000
+            )
 
     def _on_treemap_click(self, path: str) -> None:
         """treemap 点击 -> 切到空间浏览并尝试定位路径。"""
@@ -262,10 +352,24 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.trie:
             self.chart_panel.set_breakdown(self.trie.top_level())
 
-    def _on_scan_done(self, files: int, dirs: int, nbytes) -> None:
+    def _on_scan_done(self, files: int, dirs: int, nbytes, status: str = "ok") -> None:
         self._ui_timer.stop()
         self._refresh_ui()
-        # 持久化快照(全量替换 + 已装包)
+        # canceled 与 stalled 都走"展示已扫部分 + 不落快照"(避免半截结果污染缓存)
+        if status != "ok":
+            self._finish_scan_ui(
+                self.trie, self._installed_pkgs, files, dirs, nbytes, source="full"
+            )
+            if status == "canceled":
+                msg = f"已取消:仅展示已扫 {files:,} 文件 / {human_size(nbytes)}(未保存快照)"
+            else:  # stalled:连接停滞超时
+                msg = (
+                    f"扫描未完成:连接停滞超时(已扫 {files:,} 文件 / "
+                    f"{human_size(nbytes)},未保存快照)。请检查 USB/无线 adb 连接后重试。"
+                )
+            self.statusBar().showMessage(msg, 0)
+            return
+        # 正常完成:持久化快照(全量替换 + 已装包)
         try:
             self._scan_service.persist(
                 SCAN_ROOT, self.trie, files, nbytes, self._installed_pkgs, "full"
@@ -280,6 +384,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ui_timer.stop()
         self.act_scan.setEnabled(True)
         self.act_scan_force.setEnabled(True)
+        self.act_cancel.setEnabled(False)
         self.act_scan.setText("▶ 扫描")
         self.statusBar().showMessage(f"扫描失败:{msg}", 0)
 
@@ -345,3 +450,71 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_clean.setEnabled(True)
         self.act_scan.setEnabled(True)
         self.act_scan_force.setEnabled(True)
+
+    # --- 导出报告 ---
+    def _export_report(self) -> None:
+        if not self._junk_items and self.trie is None:
+            self.statusBar().showMessage("暂无可导出的数据(请先扫描)", 3000)
+            return
+        path, _flt = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出报告", "mp-cleaner-report.csv",
+            "CSV 表格 (*.csv);;JSON (*.json)",
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".json"):
+                self._write_json(path)
+            else:
+                self._write_csv(path)
+        except Exception as e:  # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, "导出失败", str(e))
+            return
+        self.statusBar().showMessage(f"已导出报告:{path}", 6000)
+
+    def _report_rows(self) -> list[dict]:
+        return [
+            {
+                "category": it.category,
+                "risk": it.risk,
+                "size_bytes": it.size,
+                "size": human_size(it.size),
+                "path": it.path,
+            }
+            for it in sorted(self._junk_items, key=lambda i: -i.size)
+        ]
+
+    def _write_csv(self, path: str) -> None:
+        import csv
+
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["类别", "风险", "字节数", "大小", "路径"])
+            for r in self._report_rows():
+                w.writerow([r["category"], r["risk"], r["size_bytes"], r["size"], r["path"]])
+
+    def _write_json(self, path: str) -> None:
+        import json
+
+        total = self.trie.total_bytes if self.trie else 0
+        payload = {
+            "summary": {
+                "total_bytes": total,
+                "total": human_size(total),
+                "junk_items": len(self._junk_items),
+                "junk_bytes": sum(it.size for it in self._junk_items),
+            },
+            "items": self._report_rows(),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def closeEvent(self, event) -> None:
+        # 关窗时收尾 SQLite 连接
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._store = None
+        super().closeEvent(event)

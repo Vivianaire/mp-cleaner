@@ -8,8 +8,8 @@
 - 目录类目(缓存/缩略图/残留)整体覆盖其子树:命中后不再细分子项,避免重复。
 - 一个节点只进一个类别(yielded 集合)。
 - 大文件用 mtime 判定陈旧(Android 多 noatime,atime 不可靠)。
-- 重复文件为「按大小预筛」候选(MVP 不做 MD5 全量校验,过 adb 读全盘太慢);
-  仅对 >= 5MB 的文件分组,标注需进一步确认。
+- 重复文件先「按大小预筛」出候选(过 adb 读全盘做全量 MD5 太慢);候选再由后台
+  ``DedupWorker`` 采样哈希(首尾各 128KB 的 md5)复核,剔除同大小但内容不同者。
 """
 from __future__ import annotations
 
@@ -69,7 +69,10 @@ def _categorize(node: Node, installed: set[str]) -> str | None:
     """返回该节点命中的类别(目录类目或日志),否则 None。"""
     if not node.is_file:
         lname = node.name.lower()
-        if _is_residue(node, installed):
+        # installed 为空 = pm 查询失败,而非真的没装应用(真机必有数百个)。
+        # 此时**跳过残留判定**,否则会把所有 Android/data/* 误标为「已卸载残留」
+        # (安全类,默认勾选、可一键删),酿成误删活数据。
+        if installed and _is_residue(node, installed):
             return "已卸载残留"
         if lname in _THUMB_NAMES:
             return "缩略图"

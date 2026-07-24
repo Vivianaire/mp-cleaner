@@ -64,6 +64,6 @@ class ScanService:
         )
         self.store.upsert_many(rows)
         self.store.commit()
-        if packages is not None:
+        if packages:                       # 仅在拿到非空包列表时更新缓存
             self.store.set_meta("packages", json.dumps(packages))
         self.store.add_scan_run(root, now, now, file_count, nbytes, source)

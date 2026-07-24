@@ -101,6 +101,7 @@ class TreeMap(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(260)
+        self.setMouseTracking(True)          # 无需按键即响应悬停
         self._entries: list[tuple[str, int, str, str]] = []   # name,bytes,path,color
         self._rects: list[tuple[float, float, float, float]] = []
         self._hover = -1
@@ -133,11 +134,18 @@ class TreeMap(QtWidgets.QWidget):
             p.drawText(self.rect(), int(QtCore.Qt.AlignmentFlag.AlignCenter), "扫描后展示占用 treemap")
             p.end()
             return
-        fm = p.fontMetrics()
-        for (rx, ry, rw, rh), (name, bytes_, _path, color) in zip(self._rects, self._entries):
+        for i, ((rx, ry, rw, rh), (name, bytes_, _path, color)) in enumerate(
+            zip(self._rects, self._entries)
+        ):
             rect = QtCore.QRectF(rx + 1, ry + 1, rw - 2, rh - 2)
-            p.setPen(QtCore.QPen(QtGui.QColor("#ffffff"), 1))
-            p.setBrush(QtGui.QColor(color))
+            if i == self._hover:
+                p.setPen(QtGui.QPen(QtGui.QColor("#1e293b"), 2))
+            else:
+                p.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 1))
+            c = QtGui.QColor(color)
+            if i == self._hover:
+                c = c.lighter(112)
+            p.setBrush(c)
             p.drawRoundedRect(rect, 3, 3)
             if rw > 54 and rh > 26:
                 p.setPen(QtGui.QColor("#ffffff"))
@@ -152,6 +160,12 @@ class TreeMap(QtWidgets.QWidget):
         idx = self._hit(e.position().x(), e.position().y())
         if idx != self._hover:
             self._hover = idx
+            if 0 <= idx < len(self._entries):
+                from ...utils import human_size
+                name, bytes_, path, _c = self._entries[idx]
+                self.setToolTip(f"{name} — {human_size(bytes_)}\n{path}")
+            else:
+                self.setToolTip("")
             self.update()
 
     def mousePressEvent(self, e) -> None:

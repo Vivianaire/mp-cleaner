@@ -75,7 +75,10 @@ class Store:
         return cur.fetchone()[0]
 
     def begin_replace(self, root: str, scanned_at: int) -> None:
-        """开启一次全量替换:删除该 root 下旧记录。"""
+        """开启一次全量替换:删除该 root 下旧记录。
+
+        ``scanned_at`` 由调用方作为新快照时间戳复用(见 upsert_many),此处仅清旧行。
+        """
         self.conn.execute("DELETE FROM files WHERE path LIKE ?", (root + "/%",))
 
     def upsert_many(self, rows) -> None:
@@ -114,6 +117,28 @@ class Store:
             (root, started, finished, file_count, nbytes, source),
         )
         self.conn.commit()
+
+    def list_scan_runs(self, root: str | None = None, limit: int = 200):
+        """历史扫描记录(时间升序,便于画趋势)。
+
+        返回 [(started, finished, file_count, bytes, source), ...]。给定 ``root``
+        则只取该根;``limit`` 取最近 N 条后再正序返回。
+        """
+        if root is None:
+            cur = self.conn.execute(
+                "SELECT started,finished,file_count,bytes,source FROM ("
+                "  SELECT * FROM scan_runs ORDER BY id DESC LIMIT ?"
+                ") ORDER BY started ASC",
+                (limit,),
+            )
+        else:
+            cur = self.conn.execute(
+                "SELECT started,finished,file_count,bytes,source FROM ("
+                "  SELECT * FROM scan_runs WHERE root=? ORDER BY id DESC LIMIT ?"
+                ") ORDER BY started ASC",
+                (root, limit),
+            )
+        return cur.fetchall()
 
     def close(self) -> None:
         self.conn.commit()

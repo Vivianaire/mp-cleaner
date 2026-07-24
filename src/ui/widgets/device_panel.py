@@ -40,6 +40,12 @@ class DevicePanel(QtWidgets.QWidget):
         lay.addWidget(self.status_lbl, 1)
         lay.addWidget(self.detail_lbl, 2)
 
+        # 未连接时温和轮询 adb devices(每 3s);连上授权设备后停止。全程应用内,
+        # 不弹窗(已由 AdbClient 的 CREATE_NO_WINDOW 保证)。
+        self._poll_timer = QtCore.QTimer(self)
+        self._poll_timer.setInterval(3000)
+        self._poll_timer.timeout.connect(self._poll_refresh)
+
         QtCore.QTimer.singleShot(0, self.refresh)
 
     # --- public ---
@@ -54,6 +60,12 @@ class DevicePanel(QtWidgets.QWidget):
         return None
 
     # --- slots ---
+    def _poll_refresh(self) -> None:
+        # 重入保护:上一次 refresh 的 worker 还在跑就跳过本轮
+        if self._worker and self._worker.isRunning():
+            return
+        self.refresh()
+
     def refresh(self) -> None:
         self.refresh_btn.setEnabled(False)
         self.status_lbl.setText("检测中…")
@@ -84,6 +96,11 @@ class DevicePanel(QtWidgets.QWidget):
             )
         self.combo.blockSignals(False)
         self._on_combo_changed(self.combo.currentIndex(), props)
+        # 有授权设备 → 停轮询;无设备/未授权 → 继续(或开始)轮询等设备插入
+        if authorized:
+            self._poll_timer.stop()
+        else:
+            self._poll_timer.start()
 
     def _on_combo_changed(self, idx: int, props: dict | None = None) -> None:
         d: DeviceInfo | None = self.combo.itemData(idx) if idx >= 0 else None
@@ -119,3 +136,4 @@ class DevicePanel(QtWidgets.QWidget):
         self.status_lbl.setText("检测失败")
         self.detail_lbl.setText(msg)
         self.refresh_btn.setEnabled(True)
+        self._poll_timer.start()

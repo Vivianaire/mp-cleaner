@@ -1,5 +1,7 @@
-"""仪表盘视图:存储用量 + treemap + 类型圆环 + 最大文件 + 洞察。"""
+"""仪表盘视图:存储用量 + treemap + 类型圆环 + 最大文件 + 应用占用 + 洞察。"""
 from __future__ import annotations
+
+import heapq
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -29,6 +31,7 @@ class StorageBar(QtWidgets.QWidget):
         if self._total <= 0:
             p.setPen(QtGui.QColor("#999"))
             p.drawText(self.rect(), int(QtCore.Qt.AlignmentFlag.AlignCenter), "存储信息不可用")
+            p.end()
             return
         pct = self._used * 100 / self._total
         color = "#10b981" if pct < 70 else ("#f59e0b" if pct < 90 else "#ef4444")
@@ -39,7 +42,7 @@ class StorageBar(QtWidgets.QWidget):
                    f"  ({pct:.0f}%)  ·  可用 {human_size(self._avail)}")
         by, bh = 22, 14
         p.setBrush(QtGui.QColor("#f1f5f9"))
-        p.setPen(QtCore.QPen(QtGui.QColor("#e5e7eb"), 1))
+        p.setPen(QtGui.QPen(QtGui.QColor("#e5e7eb"), 1))
         p.drawRoundedRect(QtCore.QRectF(0, by, w, bh), 7, 7)
         p.setPen(QtCore.Qt.PenStyle.NoPen)
         p.setBrush(QtGui.QColor(color))
@@ -75,6 +78,13 @@ class DashboardView(QtWidgets.QWidget):
         self.largest.setStyleSheet("font-family: monospace;")
         gl.addWidget(self.largest)
         right.addWidget(grp, 1)
+        # 应用占用(diskstats,含私有数据;闲置态来自 am get-inactive)
+        agrp = QtWidgets.QGroupBox("应用占用 Top(⏸ = 系统判为长期未用)")
+        al = QtWidgets.QVBoxLayout(agrp)
+        self.app_list = QtWidgets.QListWidget()
+        self.app_list.setStyleSheet("font-family: monospace;")
+        al.addWidget(self.app_list)
+        right.addWidget(agrp, 1)
         right_w = QtWidgets.QWidget()
         right_w.setLayout(right)
         split.addWidget(left_w)
@@ -112,11 +122,23 @@ class DashboardView(QtWidgets.QWidget):
         ]
         self.type_donut.set_items(donut_items)
 
-        largest.sort(reverse=True)
+        top_largest = heapq.nlargest(12, largest)      # 只取前 12,免全量排序
         self.largest.clear()
-        for size, path in largest[:12]:
+        for size, path in top_largest:
             self.largest.addItem(f"{human_size(size):>10}   {path}")
-        self.insights.setHtml(self._insights(trie, storage, junk_items, top, type_sizes, largest))
+        self.insights.setHtml(
+            self._insights(trie, storage, junk_items, top, type_sizes, top_largest)
+        )
+
+    def set_app_usage(self, apps) -> None:
+        """填充「应用占用 Top」列表。apps: list[AppUsage](已按 total 降序)。"""
+        self.app_list.clear()
+        if not apps:
+            self.app_list.addItem("(diskstats 不可用或无数据)")
+            return
+        for a in apps:
+            flag = "⏸" if a.idle is True else ("▶" if a.idle is False else " ")
+            self.app_list.addItem(f"{flag} {human_size(a.total):>10}   {a.pkg}")
 
     def _insights(self, trie, storage, junk_items, top, type_sizes, largest) -> str:
         bullets = []

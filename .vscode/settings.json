@@ -1,0 +1,5 @@
+{
+  "//": "Pylance/Python 扩展:锁定项目虚拟环境,消除「无法解析导入 PyQt6」报错",
+  "python.defaultInterpreterPath": ".venv/Scripts/python.exe",
+  "python.analysis.extraPaths": ["."]
+}

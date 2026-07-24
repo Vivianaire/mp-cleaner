@@ -9,9 +9,21 @@ import datetime as _dt
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from ...services import trash_service
 from ...utils import human_size
-from ..workers import PhoneTrashWorker
+from ..workers import PhoneTrashWorker, TrashOpWorker
+
+
+class _SizeItem(QtWidgets.QTableWidgetItem):
+    """按字节数排序的表格项(展示为人类可读,排序按真实数值)。"""
+
+    def __init__(self, nbytes: int):
+        super().__init__(human_size(nbytes))
+        self._n = int(nbytes)
+
+    def __lt__(self, other):
+        if isinstance(other, _SizeItem):
+            return self._n < other._n
+        return super().__lt__(other)
 
 
 class TrashView(QtWidgets.QWidget):
@@ -20,6 +32,7 @@ class TrashView(QtWidgets.QWidget):
         self._backend = None
         self._store = None
         self._phone_worker: PhoneTrashWorker | None = None
+        self._op_worker: TrashOpWorker | None = None
         self._build()
 
     def _build(self) -> None:
@@ -36,7 +49,8 @@ class TrashView(QtWidgets.QWidget):
         b_delete = QtWidgets.QPushButton("✕ 永久删除选中")
         b_empty = QtWidgets.QPushButton("清空全部")
         b_expire = QtWidgets.QPushButton("清理过期")
-        for b in (b_restore, b_delete, b_empty, b_expire):
+        self._buttons = (b_restore, b_delete, b_empty, b_expire)
+        for b in self._buttons:
             b.clicked.connect(self._guard(b))
         row.addWidget(self.own_total)
         row.addStretch(1)
@@ -51,6 +65,7 @@ class TrashView(QtWidgets.QWidget):
         self.own_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.own_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.own_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.own_table.setSortingEnabled(True)
         self.own_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
         l1.addWidget(self.own_table)
         outer.addWidget(g1)
@@ -93,22 +108,27 @@ class TrashView(QtWidgets.QWidget):
         if not self._store:
             return
         rows = self._store.list_trash()
+        self.own_table.setSortingEnabled(False)      # 填充时先关排序,避免行错位
         self.own_table.setRowCount(0)
         for tid, original, _trash_path, size, category, moved_at in rows:
             r = self.own_table.rowCount()
             self.own_table.insertRow(r)
             self._set(r, 0, original, tid)
-            self._set(r, 1, human_size(size), tid)
+            self._set(r, 1, human_size(size), tid, nbytes=size)
             self._set(r, 2, category or "", tid)
             try:
                 ts = _dt.datetime.fromtimestamp(moved_at).strftime("%Y-%m-%d %H:%M")
             except Exception:  # noqa: BLE001
                 ts = ""
             self._set(r, 3, ts, tid)
+        self.own_table.setSortingEnabled(True)
         self.own_total.setText(f"自带回收站:{len(rows)} 项,占用 {human_size(self._store.trash_total())}")
 
-    def _set(self, r, c, text, tid) -> None:
-        item = QtWidgets.QTableWidgetItem(text)
+    def _set(self, r, c, text, tid, nbytes=None) -> None:
+        if nbytes is not None:
+            item = _SizeItem(nbytes)
+        else:
+            item = QtWidgets.QTableWidgetItem(text)
         item.setData(QtCore.Qt.ItemDataRole.UserRole, tid)
         self.own_table.setItem(r, c, item)
 
@@ -120,30 +140,55 @@ class TrashView(QtWidgets.QWidget):
                 tids.append(tid)
         return tids
 
-    # --- 自带回收站操作(inline;同卷 mv 为重命名,快)---
+    # --- 自带回收站操作(off-thread,避免多选批量 mv/rm 冻结 UI)---
     def _ready(self) -> bool:
         return bool(self._backend and self._store)
 
+    def _busy(self) -> bool:
+        return bool(self._op_worker and self._op_worker.isRunning())
+
+    def _set_buttons_enabled(self, on: bool) -> None:
+        for b in self._buttons:
+            b.setEnabled(on)
+
+    def _run_op(self, op: str, tids=None) -> None:
+        if not self._ready() or self._busy():
+            return
+        self._set_buttons_enabled(False)
+        self._op_worker = TrashOpWorker(self._backend, self._store, op, tids, parent=self)
+        self._op_worker.result.connect(self._on_op_done)
+        self._op_worker.failed.connect(self._on_op_fail)
+        self._op_worker.finished.connect(self._op_worker.deleteLater)
+        self._op_worker.start()
+
+    def _on_op_done(self, op: str, count: int, freed) -> None:
+        self._set_buttons_enabled(True)
+        self.refresh_own()
+        if op == "restore":
+            QtWidgets.QMessageBox.information(self, "恢复完成", f"已恢复 {count} 项到原路径")
+        elif op == "empty":
+            QtWidgets.QMessageBox.information(self, "已清空", f"释放 {human_size(freed or 0)}")
+        elif op == "expire":
+            QtWidgets.QMessageBox.information(
+                self, "清理过期", f"清理 {count} 项过期(>14天),释放 {human_size(freed or 0)}"
+            )
+
+    def _on_op_fail(self, msg: str) -> None:
+        self._set_buttons_enabled(True)
+        self.refresh_own()
+        QtWidgets.QMessageBox.warning(self, "操作失败", msg)
+
     def restore_selected(self) -> None:
-        if not self._ready():
+        if not self._ready() or self._busy():
             return
         tids = self._selected_tids()
         if not tids:
             QtWidgets.QMessageBox.information(self, "恢复", "先选中要恢复的项")
             return
-        n = 0
-        for tid in tids:
-            try:
-                trash_service.restore(self._backend, self._store, tid)
-                n += 1
-            except Exception as e:  # noqa: BLE001
-                QtWidgets.QMessageBox.warning(self, "恢复失败", str(e))
-                break
-        self.refresh_own()
-        QtWidgets.QMessageBox.information(self, "恢复完成", f"已恢复 {n} 项到原路径")
+        self._run_op("restore", tids)
 
     def delete_selected(self) -> None:
-        if not self._ready():
+        if not self._ready() or self._busy():
             return
         tids = self._selected_tids()
         if not tids:
@@ -154,18 +199,10 @@ class TrashView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.StandardButton.No,
         ) != QtWidgets.QMessageBox.StandardButton.Yes:
             return
-        for tid in tids:
-            row = self._store.get_trash(tid)
-            if row:
-                try:
-                    self._backend.delete(row[2])
-                except Exception:  # noqa: BLE001
-                    pass
-                self._store.delete_trash(tid)
-        self.refresh_own()
+        self._run_op("delete", tids)
 
     def empty_all(self) -> None:
-        if not self._ready() or self._store.trash_total() == 0:
+        if not self._ready() or self._busy() or self._store.trash_total() == 0:
             return
         if QtWidgets.QMessageBox.question(
             self, "清空回收站",
@@ -174,16 +211,12 @@ class TrashView(QtWidgets.QWidget):
             QtWidgets.QMessageBox.StandardButton.No,
         ) != QtWidgets.QMessageBox.StandardButton.Yes:
             return
-        freed = trash_service.empty(self._backend, self._store)
-        self.refresh_own()
-        QtWidgets.QMessageBox.information(self, "已清空", f"释放 {human_size(freed)}")
+        self._run_op("empty")
 
     def expire_old(self) -> None:
-        if not self._ready():
+        if not self._ready() or self._busy():
             return
-        freed, n = trash_service.expire(self._backend, self._store)
-        self.refresh_own()
-        QtWidgets.QMessageBox.information(self, "清理过期", f"清理 {n} 项过期(>14天),释放 {human_size(freed)}")
+        self._run_op("expire")
 
     # --- 手机自带回收站 ---
     def detect_phone(self) -> None:

@@ -35,12 +35,12 @@ class DonutChart(QtWidgets.QWidget):
             span = val * 360.0 / total
             rect = QtCore.QRectF(cx - r_out, cy - r_out, r_out * 2, r_out * 2)
             p.setBrush(QtGui.QColor(color))
-            p.setPen(QtCore.QPen(QtGui.QColor("#ffffff"), 1))
+            p.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 1))
             # PyQt span: negative = clockwise, angles in 1/16 degree
             p.drawPie(rect, int(start * 16), int(-span * 16))
             start -= span
         # 中心镂空
-        p.setBrush(QtCore.QBrush(QtCore.Qt.GlobalColor.white))
+        p.setBrush(QtGui.QBrush(QtCore.Qt.GlobalColor.white))
         p.setPen(QtCore.Qt.PenStyle.NoPen)
         p.drawEllipse(QtCore.QPointF(cx, cy), r_in, r_in)
         # 中心总量文字

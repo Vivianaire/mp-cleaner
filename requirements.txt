@@ -1,2 +1,1 @@
 PyQt6>=6.11
-pyqtgraph>=0.14

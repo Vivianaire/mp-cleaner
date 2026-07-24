@@ -1,7 +1,7 @@
 """自动分析视图:建议卡片 + 一键优化。"""
 from __future__ import annotations
 
-from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6 import QtCore, QtWidgets
 
 from ...utils import human_size
 

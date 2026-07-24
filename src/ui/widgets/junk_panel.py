@@ -36,6 +36,12 @@ class JunkPanel(QtWidgets.QWidget):
         head.addWidget(self.reclaim_lbl)
         lay.addLayout(head)
 
+        self.search = QtWidgets.QLineEdit()
+        self.search.setPlaceholderText("🔍 过滤路径/文件名(不影响整类勾选清理)")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._apply_filter)
+        lay.addWidget(self.search)
+
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels(["项", "路径", "大小", "风险"])
@@ -108,6 +114,8 @@ class JunkPanel(QtWidgets.QWidget):
             self.hint.setText("")
         self._guard = False
         self._update_reclaimable()
+        if self.search.text().strip():
+            self._apply_filter(self.search.text())
 
     # --- 选择 ---
     def checked_items(self) -> list[JunkItem]:
@@ -139,6 +147,23 @@ class JunkPanel(QtWidgets.QWidget):
             return
         self._update_reclaimable()
         self.selectionChanged.emit()
+
+    def _apply_filter(self, text: str) -> None:
+        """按输入过滤显示的子项;整类勾选逻辑不受影响(仍按类别清理全量)。"""
+        q = (text or "").strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            g = self.tree.topLevelItem(i)
+            any_visible = False
+            for j in range(g.childCount()):
+                c = g.child(j)
+                it = c.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                if it is None:                       # “还有 N 项” 占位行
+                    c.setHidden(bool(q))
+                    continue
+                hit = (not q) or q in it.path.lower() or q in it.node.name.lower()
+                c.setHidden(not hit)
+                any_visible = any_visible or hit
+            g.setHidden(bool(q) and not any_visible)
 
     def _update_reclaimable(self) -> None:
         total = sum(it.size for it in self.checked_items())
