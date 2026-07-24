@@ -1,4 +1,4 @@
-"""自动分析视图:建议卡片 + 一键优化。"""
+"""自动分析视图:建议卡片 + 一键优化。配色走 theme(徽章/标题 QSS role)。"""
 from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
@@ -16,29 +16,26 @@ class RecommendationCard(QtWidgets.QGroupBox):
         lay = QtWidgets.QVBoxLayout(self)
         head = QtWidgets.QHBoxLayout()
         badge = QtWidgets.QLabel(rec.safety)
-        badge.setStyleSheet(
-            "background:#dcfce7;color:#166534;padding:1px 8px;border-radius:8px;"
-            if rec.safety == "安全"
-            else "background:#fef3c7;color:#92400e;padding:1px 8px;border-radius:8px;"
-        )
+        badge.setObjectName("good" if rec.safety == "安全" else "warning")
         size_lbl = QtWidgets.QLabel(f"可释放 {human_size(rec.reclaimable)}")
-        size_lbl.setStyleSheet("font-weight:600;color:#1e3a8a;")
+        size_lbl.setObjectName("title")
         head.addWidget(badge)
         head.addStretch(1)
         head.addWidget(size_lbl)
         lay.addLayout(head)
-        lay.addWidget(QtWidgets.QLabel(rec.detail))
+        detail = QtWidgets.QLabel(rec.detail)
+        detail.setObjectName("secondary")
+        lay.addWidget(detail)
 
         row = QtWidgets.QHBoxLayout()
         row.addStretch(1)
         if rec.auto:
             b = QtWidgets.QPushButton("✓ 应用此建议")
             b.clicked.connect(lambda: self.apply.emit(self._rec.items))
-            row.addWidget(b)
         else:
             b = QtWidgets.QPushButton("去审视 →")
             b.clicked.connect(lambda: self.review.emit(self._rec.key))
-            row.addWidget(b)
+        row.addWidget(b)
         lay.addLayout(row)
 
 
@@ -50,13 +47,12 @@ class RecommendationsView(QtWidgets.QWidget):
         super().__init__(parent)
         self._recs: list = []
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(12, 12, 12, 12)
 
         bar = QtWidgets.QHBoxLayout()
         self.summary = QtWidgets.QLabel("扫描后展示建议")
-        self.summary.setStyleSheet("font-weight:600;")
+        self.summary.setObjectName("title")
         self.btn_opt = QtWidgets.QPushButton("⚡ 一键优化")
-        self.btn_opt.setStyleSheet("padding:6px 16px;font-weight:600;")
         self.btn_opt.setEnabled(False)
         self.btn_opt.clicked.connect(self._on_optimize)
         bar.addWidget(self.summary, 1)

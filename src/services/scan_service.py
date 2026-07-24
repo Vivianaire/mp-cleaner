@@ -31,6 +31,14 @@ class ScanService:
         except (ValueError, TypeError):
             return []
 
+    def cached_third_packages(self) -> list[str]:
+        """上次扫描时拉取的第三方包名(系统保守判定用);无则空。"""
+        raw = self.store.get_meta("packages_third")
+        try:
+            return json.loads(raw) if raw else []
+        except (ValueError, TypeError):
+            return []
+
     def try_cached(self, root: str) -> FileTrie | None:
         """目录签名一致则返回由快照重建的 trie,否则 None。"""
         if not self.has_snapshot(root):
@@ -53,9 +61,10 @@ class ScanService:
         file_count: int,
         nbytes: int,
         packages: list[str] | None = None,
+        third_packages: list[str] | None = None,
         source: str = "full",
     ) -> None:
-        """整表替换写回快照 + 记录历史 + 存已装包。"""
+        """整表替换写回快照 + 记录历史 + 存已装包/第三方包。"""
         now = int(time.time())
         self.store.begin_replace(root, now)
         rows = (
@@ -66,4 +75,6 @@ class ScanService:
         self.store.commit()
         if packages:                       # 仅在拿到非空包列表时更新缓存
             self.store.set_meta("packages", json.dumps(packages))
+        if third_packages:
+            self.store.set_meta("packages_third", json.dumps(third_packages))
         self.store.add_scan_run(root, now, now, file_count, nbytes, source)

@@ -1,6 +1,6 @@
 """趋势视图:历次扫描的存储占用走势(来自 SQLite ``scan_runs``)+ 明细表。
 
-图表沿用本项目的手绘 QPainter 风格(不引第三方图库)。数据来自
+图表沿用本项目的手绘 QPainter 风格(不引第三方图库),配色随主题。数据来自
 ``Store.list_scan_runs()``:每次扫描落一条 (started, finished, file_count, bytes, source)。
 """
 from __future__ import annotations
@@ -10,6 +10,7 @@ import datetime as _dt
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...utils import human_size
+from .. import theme
 
 
 class _LineChart(QtWidgets.QWidget):
@@ -25,13 +26,14 @@ class _LineChart(QtWidgets.QWidget):
         self.update()
 
     def paintEvent(self, _e) -> None:
+        t = theme.current()
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), QtGui.QColor("#ffffff"))
+        p.fillRect(self.rect(), QtGui.QColor(t.chart_bg))
         w, h = self.width(), self.height()
         ml, mr, mt, mb = 64, 16, 16, 28
         if len(self._pts) < 2:
-            p.setPen(QtGui.QColor("#aaa"))
+            p.setPen(QtGui.QColor(t.ink_muted))
             p.drawText(self.rect(), int(QtCore.Qt.AlignmentFlag.AlignCenter),
                        "至少两次扫描后展示趋势")
             p.end()
@@ -45,11 +47,11 @@ class _LineChart(QtWidgets.QWidget):
         n = len(self._pts)
 
         # 轴
-        p.setPen(QtGui.QPen(QtGui.QColor("#e5e7eb"), 1))
+        p.setPen(QtGui.QPen(QtGui.QColor(t.hairline), 1))
         p.drawLine(ml, mt, ml, mt + ph)
         p.drawLine(ml, mt + ph, ml + pw, mt + ph)
         # y 轴刻度(min/max)
-        p.setPen(QtGui.QColor("#94a3b8"))
+        p.setPen(QtGui.QColor(t.ink_muted))
         p.drawText(QtCore.QRectF(0, mt - 6, ml - 6, 16),
                    int(QtCore.Qt.AlignmentFlag.AlignRight), human_size(vmax))
         p.drawText(QtCore.QRectF(0, mt + ph - 8, ml - 6, 16),
@@ -60,20 +62,19 @@ class _LineChart(QtWidgets.QWidget):
             y = mt + ph - (ph * (v - vmin) / span)
             return QtCore.QPointF(x, y)
 
-        # 面积 + 折线
+        # 折线 + 数据点
         path = QtGui.QPainterPath()
         path.moveTo(xy(0, vals[0]))
         for i in range(1, n):
             path.lineTo(xy(i, vals[i]))
-        p.setPen(QtGui.QPen(QtGui.QColor("#2563eb"), 2))
+        p.setPen(QtGui.QPen(QtGui.QColor(t.primary), 2))
         p.drawPath(path)
-        p.setBrush(QtGui.QColor("#2563eb"))
+        p.setBrush(QtGui.QColor(t.primary))
         p.setPen(QtCore.Qt.PenStyle.NoPen)
         for i in range(n):
-            pt = xy(i, vals[i])
-            p.drawEllipse(pt, 3, 3)
+            p.drawEllipse(xy(i, vals[i]), 3, 3)
         # x 轴端点标签
-        p.setPen(QtGui.QColor("#94a3b8"))
+        p.setPen(QtGui.QColor(t.ink_muted))
         p.drawText(QtCore.QRectF(ml, mt + ph + 4, 120, 16),
                    int(QtCore.Qt.AlignmentFlag.AlignLeft), self._pts[0][0])
         p.drawText(QtCore.QRectF(ml + pw - 120, mt + ph + 4, 120, 16),
@@ -86,13 +87,13 @@ class TrendsView(QtWidgets.QWidget):
         super().__init__(parent)
         self._store = None
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(12, 12, 12, 12)
 
         head = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("扫描占用趋势")
-        title.setStyleSheet("font-weight:600;")
+        title.setObjectName("title")
         self.summary = QtWidgets.QLabel("扫描后累积历史,连成走势")
-        self.summary.setStyleSheet("color:#666;")
+        self.summary.setObjectName("muted")
         btn = QtWidgets.QPushButton("刷新")
         btn.clicked.connect(self.refresh)
         head.addWidget(title)

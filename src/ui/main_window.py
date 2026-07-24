@@ -60,6 +60,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._junk_items: list = []
         self._auto_scan_done = False
         self._installed_pkgs: list[str] = []
+        self._third_pkgs: list[str] = []
         self._ui_timer = QtCore.QTimer(self)
         self._ui_timer.setInterval(250)
         self._ui_timer.timeout.connect(self._refresh_ui)
@@ -141,12 +142,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_export.triggered.connect(self._export_report)
         self.act_export.setEnabled(False)
 
+        self.act_theme = QtGui.QAction("🌙", self)
+        self.act_theme.setToolTip("切换深/浅色主题")
+        self.act_theme.triggered.connect(self._toggle_theme)
+
         tb.addAction(self.act_scan)
         tb.addAction(self.act_scan_force)
         tb.addAction(self.act_cancel)
         tb.addAction(self.act_clean)
         tb.addSeparator()
         tb.addAction(self.act_export)
+        tb.addSeparator()
+        tb.addAction(self.act_theme)
 
     # --- 设备 ---
     def _on_device_changed(self, device) -> None:
@@ -242,7 +249,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_ui()
         self.tree_view.expandToDepth(0)
 
-        items = classify(trie, packages, time.time())
+        third = (self._scan_service.cached_third_packages() if source == "cached"
+                 else self._third_pkgs)
+        items = classify(trie, packages, third, time.time())
         self._junk_items = items
         self.junk_panel.set_items(items)
         self.act_clean.setEnabled(len(items) > 0)
@@ -343,8 +352,10 @@ class MainWindow(QtWidgets.QMainWindow):
             f"全深扫描中… {files:,} 文件 / {human_size(nbytes)}"
         )
 
-    def _on_packages(self, pkgs: list) -> None:
+    def _on_packages(self, pkgs: list, third_pkgs: list | None = None) -> None:
         self._installed_pkgs = pkgs
+        if third_pkgs is not None:
+            self._third_pkgs = third_pkgs
 
     def _refresh_ui(self) -> None:
         if self.tree_model:
@@ -372,7 +383,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # 正常完成:持久化快照(全量替换 + 已装包)
         try:
             self._scan_service.persist(
-                SCAN_ROOT, self.trie, files, nbytes, self._installed_pkgs, "full"
+                SCAN_ROOT, self.trie, files, nbytes, self._installed_pkgs,
+                self._third_pkgs, "full",
             )
         except Exception as e:  # noqa: BLE001
             self.statusBar().showMessage(f"快照写入失败:{e}", 5000)
@@ -508,6 +520,12 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    def _toggle_theme(self) -> None:
+        from . import theme
+        m = theme.toggle()
+        theme.apply_theme(QtWidgets.QApplication.instance(), m)
+        self.act_theme.setText("☀" if m == theme.Mode.DARK else "🌙")
 
     def closeEvent(self, event) -> None:
         # 关窗时收尾 SQLite 连接

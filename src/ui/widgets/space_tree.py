@@ -30,3 +30,10 @@ class SpaceTreeView(QtWidgets.QTreeView):
     def set_scan_model(self, model: QtCore.QAbstractItemModel) -> None:
         """M3:接入流式构建的 TreeModel。"""
         self.setModel(model)
+        header = self.header()
+        header.setStretchLastSection(False)
+        # 名称列(0)拉伸占主宽,防长目录名被另几列挤成「...」;其余列按内容宽度
+        ncols = model.columnCount() if hasattr(model, "columnCount") else len(HEADERS)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for c in range(1, ncols):
+            header.setSectionResizeMode(c, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)

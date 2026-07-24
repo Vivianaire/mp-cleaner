@@ -60,7 +60,7 @@ class ScannerWorker(_Worker):
 
     batchReady = QtCore.pyqtSignal(list)                     # list[(path, size, is_file, mtime)]
     progress = QtCore.pyqtSignal(int, object)                # files, bytes(object 防 int32 溢出)
-    packagesReady = QtCore.pyqtSignal(list)                  # 已装包名(分类用)
+    packagesReady = QtCore.pyqtSignal(list, list)             # (已装包全量, 第三方包)分类/系统保守用
     finishedScan = QtCore.pyqtSignal(int, int, object, str)  # files, dirs, bytes, status
     # status ∈ {"ok":正常完成, "canceled":用户取消, "stalled":连接停滞超时}
     # canceled/stalled 也走本信号(不走 failed),保留已扫部分供 UI 展示。
@@ -128,9 +128,14 @@ class ScannerWorker(_Worker):
             if batch:
                 self.batchReady.emit(batch)
             try:
-                self.packagesReady.emit(self._backend.installed_packages())
+                inst = self._backend.installed_packages()
             except Exception:  # noqa: BLE001
-                self.packagesReady.emit([])
+                inst = []
+            try:
+                third = self._backend.third_party_packages()
+            except Exception:  # noqa: BLE001
+                third = []
+            self.packagesReady.emit(inst, third)
             self.progress.emit(files, nbytes)
             self.finishedScan.emit(files, dirs, nbytes, status)
         except Exception as e:  # noqa: BLE001

@@ -3,7 +3,7 @@
 用 QTreeWidget:顶层 = 类别(三态勾选),子项 = 单个垃圾目标。
 - 类别勾选 = 整类清理(含未显示的尾部项);
 - 部分勾选时按子项逐条计。
-安全类别默认勾选,中等类别默认不勾。
+安全类别默认勾选,中等类别默认不勾。配色走 theme,主题切换经 refresh_theme 重设 item 色。
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...classifier import CATEGORY_ORDER, DEFAULT_CHECK, JunkItem
 from ...utils import human_size
+from .. import theme
 
 _DISPLAY_CAP = 500        # 每类最多展示条数(整类清理不受此限)
 
@@ -24,13 +25,13 @@ class JunkPanel(QtWidgets.QWidget):
         self._guard = False
 
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setContentsMargins(12, 12, 12, 12)
 
         head = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel("可清理项")
-        title.setStyleSheet("font-weight:600;")
+        title.setObjectName("title")
         self.reclaim_lbl = QtWidgets.QLabel("已勾选可回收:—")
-        self.reclaim_lbl.setStyleSheet("color:#0a7f3f; font-weight:600;")
+        self.reclaim_lbl.setObjectName("value-good")
         head.addWidget(title)
         head.addStretch(1)
         head.addWidget(self.reclaim_lbl)
@@ -53,7 +54,7 @@ class JunkPanel(QtWidgets.QWidget):
         lay.addWidget(self.tree, 1)
 
         self.hint = QtWidgets.QLabel("扫描后在此分类列出垃圾文件。")
-        self.hint.setStyleSheet("color:#888;")
+        self.hint.setObjectName("muted")
         lay.addWidget(self.hint)
 
     # --- 入口 ---
@@ -64,6 +65,7 @@ class JunkPanel(QtWidgets.QWidget):
         for it in items:
             self._items_by_cat.setdefault(it.category, []).append(it)
 
+        t = theme.current()
         shown = False
         for cat in CATEGORY_ORDER:
             its = self._items_by_cat.get(cat)
@@ -78,7 +80,7 @@ class JunkPanel(QtWidgets.QWidget):
                 [f"{cat}   ·   {len(its_sorted)} 项   ·   共 {human_size(total)}", "", "", ""]
             )
             g.setData(0, QtCore.Qt.ItemDataRole.UserRole, cat)
-            g.setForeground(0, QtGui.QColor("#1e3a8a"))
+            g.setForeground(0, QtGui.QColor(t.primary))
             f = g.font(0); f.setBold(True); g.setFont(0, f)
             g.setFlags(
                 g.flags()
@@ -95,7 +97,7 @@ class JunkPanel(QtWidgets.QWidget):
                 c.setCheckState(0, QtCore.Qt.CheckState.Checked if checked else QtCore.Qt.CheckState.Unchecked)
                 c.setData(0, QtCore.Qt.ItemDataRole.UserRole, it)
                 if it.risk == "中等":
-                    c.setForeground(3, QtGui.QColor("#b45309"))
+                    c.setForeground(3, QtGui.QColor(t.on_warning))
                 g.addChild(c)
 
             if len(its_sorted) > _DISPLAY_CAP:
@@ -103,7 +105,7 @@ class JunkPanel(QtWidgets.QWidget):
                     [f"…还有 {len(its_sorted) - _DISPLAY_CAP} 项(随类别勾选一并处理)", "", "", ""]
                 )
                 more.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
-                more.setForeground(0, QtGui.QColor("#94a3b8"))
+                more.setForeground(0, QtGui.QColor(t.ink_muted))
                 g.addChild(more)
 
             self.tree.addTopLevelItem(g)
@@ -116,6 +118,20 @@ class JunkPanel(QtWidgets.QWidget):
         self._update_reclaimable()
         if self.search.text().strip():
             self._apply_filter(self.search.text())
+
+    def refresh_theme(self) -> None:
+        """主题切换:重设 QTreeWidgetItem 前景色(分类标题/中等风险/占位)。"""
+        t = theme.current()
+        for i in range(self.tree.topLevelItemCount()):
+            g = self.tree.topLevelItem(i)
+            g.setForeground(0, QtGui.QColor(t.primary))
+            for j in range(g.childCount()):
+                c = g.child(j)
+                it = c.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                if it is None:
+                    c.setForeground(0, QtGui.QColor(t.ink_muted))
+                elif it.risk == "中等":
+                    c.setForeground(3, QtGui.QColor(t.on_warning))
 
     # --- 选择 ---
     def checked_items(self) -> list[JunkItem]:

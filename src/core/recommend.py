@@ -23,10 +23,11 @@ def generate(junk_items) -> list[Recommendation]:
     recs: list[Recommendation] = []
     safe = [it for it in junk_items if it.risk == "安全"]
     if safe:
+        cats = sorted({it.category for it in safe})
         recs.append(
             Recommendation(
                 "clean_safe", "清理安全垃圾",
-                f"缓存 / 缩略图 / 已卸载残留 / 日志,共 {len(safe)} 项",
+                f"{' / '.join(cats)},共 {len(safe)} 项",
                 sum(i.size for i in safe), "安全", safe, auto=True,
             )
         )

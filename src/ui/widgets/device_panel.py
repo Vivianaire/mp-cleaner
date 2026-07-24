@@ -29,10 +29,10 @@ class DevicePanel(QtWidgets.QWidget):
 
         self.status_lbl = QtWidgets.QLabel("检测中…")
         self.detail_lbl = QtWidgets.QLabel("")
-        self.detail_lbl.setStyleSheet("color: #666;")
+        self.detail_lbl.setObjectName("muted")
 
         lay = QtWidgets.QHBoxLayout(self)
-        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setContentsMargins(12, 12, 12, 12)
         lay.addWidget(QtWidgets.QLabel("设备:"))
         lay.addWidget(self.combo, 1)
         lay.addWidget(self.refresh_btn)

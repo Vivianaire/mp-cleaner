@@ -1,22 +1,16 @@
-"""顶层目录占用图:自绘横向条形(标签清晰、零第三方依赖怪癖)。
+"""顶层目录占用图:自绘横向条形(标签清晰、零第三方依赖)。
 
-用 QPainter 画水平占比条,顶部 N 项 + 「其他」聚合,颜色用克制的中性色 +
-单一强调色。全项目图表(treemap/donut/占用条/趋势线)均为手绘,无第三方图库。
+配色随主题:top 占用用 sequential blue 深阶(突出前几项),其余用中性灰。
+全项目图表(treemap/donut/占用条/趋势线)均为手绘 QPainter,无第三方图库。
 """
 from __future__ import annotations
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ...utils import human_size
+from .. import theme
 
 _TOPN = 12
-# 强调色渐变:从深到浅,突出前几项
-_PALETTE = [
-    "#3b82f6", "#60a5fa", "#93c5fd", "#bfdbfe",
-    "#cbd5e1", "#cbd5e1", "#cbd5e1", "#cbd5e1",
-    "#e2e8f0", "#e2e8f0", "#e2e8f0", "#e2e8f0",
-    "#94a3b8",  # 「其他」
-]
 
 
 class ChartPanel(QtWidgets.QWidget):
@@ -28,16 +22,16 @@ class ChartPanel(QtWidgets.QWidget):
         self._total: int = 0
 
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setContentsMargins(12, 12, 12, 12)
         title = QtWidgets.QLabel("占用分布(顶层目录)")
-        title.setStyleSheet("font-weight:600;")
+        title.setObjectName("title")
         lay.addWidget(title)
 
         self.canvas = _BarCanvas(self)
         lay.addWidget(self.canvas, 1)
 
         self.summary = QtWidgets.QLabel("扫描后展示")
-        self.summary.setStyleSheet("color:#888;")
+        self.summary.setObjectName("muted")
         lay.addWidget(self.summary)
 
     def set_breakdown(self, items: list[tuple[str, int]]) -> None:
@@ -76,6 +70,7 @@ class _BarCanvas(QtWidgets.QWidget):
         return QtCore.QSize(360, h)
 
     def paintEvent(self, _event: QtGui.QPaintEvent) -> None:
+        t = theme.current()
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         if not self._rows:
@@ -89,30 +84,40 @@ class _BarCanvas(QtWidgets.QWidget):
         bar_max = max(40, bar_right - bar_left)
         row_h = 26
         y = 4
+        seq = t.sequential
         for i, (name, b) in enumerate(self._rows):
-            color = _PALETTE[i % len(_PALETTE)]
+            is_other = name.startswith("其他")
+            color = seq[6 - i] if (i < 4 and not is_other) else t.ink_muted
             frac = b / self._total
             # 名称
-            p.setPen(QtGui.QColor("#222"))
+            p.setPen(QtGui.QColor(t.ink_primary))
             p.drawText(QtCore.QRect(4, y, name_w, row_h),
                        int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft),
                        _elide(name, name_w - 4, p.fontMetrics()))
-            # 条
+            # 条轨道
             p.setPen(QtCore.Qt.PenStyle.NoPen)
-            p.setBrush(QtGui.QColor("#f1f5f9"))
+            p.setBrush(QtGui.QColor(t.hairline))
             p.drawRoundedRect(QtCore.QRect(bar_left, y + 5, bar_max, 12), 6, 6)
+            # 数值条
             p.setBrush(QtGui.QColor(color))
             bw = max(2, int(bar_max * frac))
             p.drawRoundedRect(QtCore.QRect(bar_left, y + 5, bw, 12), 6, 6)
-            # 百分比(条内)
+            # 百分比(条内深底白字 / 条外用次墨色)
             pct = f"{frac * 100:.1f}%"
-            p.setPen(QtGui.QColor("#fff") if bw > 44 else QtGui.QColor("#666"))
-            tx = bar_left + 6 if bw > 44 else bar_left + bw + 4
-            p.drawText(QtCore.QRect(tx, y, bw if bw > 44 else bar_max, row_h),
+            if bw > 44:
+                on_dark = QtGui.QColor(color).lightness() < 140
+                p.setPen(QtGui.QColor("#FFFFFF" if on_dark else t.ink_primary))
+                tx = bar_left + 6
+                tw = bw
+            else:
+                p.setPen(QtGui.QColor(t.ink_secondary))
+                tx = bar_left + bw + 4
+                tw = bar_max
+            p.drawText(QtCore.QRect(tx, y, tw, row_h),
                        int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft),
                        pct)
             # 大小
-            p.setPen(QtGui.QColor("#666"))
+            p.setPen(QtGui.QColor(t.ink_secondary))
             p.drawText(QtCore.QRect(bar_right + 6, y, size_w, row_h),
                        int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignRight),
                        human_size(b))

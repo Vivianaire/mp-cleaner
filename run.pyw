@@ -8,6 +8,7 @@ import sys
 
 from PyQt6 import QtWidgets
 
+from src.ui import theme
 from src.ui.main_window import MainWindow
 
 
@@ -21,6 +22,7 @@ def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("mp-cleaner")
     app.setApplicationDisplayName("可视化手机清理")
+    app.setStyleSheet(theme.qss(theme.Mode.LIGHT))
     win = MainWindow()
     win.show()
     return app.exec()

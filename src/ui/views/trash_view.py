@@ -37,14 +37,14 @@ class TrashView(QtWidgets.QWidget):
 
     def _build(self) -> None:
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(12, 12, 12, 12)
 
         # ---- 自带回收站 ----
         g1 = QtWidgets.QGroupBox("自带回收站(安全删除,可恢复)")
         l1 = QtWidgets.QVBoxLayout(g1)
         row = QtWidgets.QHBoxLayout()
         self.own_total = QtWidgets.QLabel("回收站:—")
-        self.own_total.setStyleSheet("font-weight:600;color:#0a7f3f;")
+        self.own_total.setObjectName("value-good")
         b_restore = QtWidgets.QPushButton("↩ 恢复选中")
         b_delete = QtWidgets.QPushButton("✕ 永久删除选中")
         b_empty = QtWidgets.QPushButton("清空全部")
@@ -77,7 +77,7 @@ class TrashView(QtWidgets.QWidget):
         b_detect = QtWidgets.QPushButton("🔍 检测")
         b_detect.clicked.connect(self.detect_phone)
         self.phone_hint = QtWidgets.QLabel("点「检测」扫描手机自带回收站")
-        self.phone_hint.setStyleSheet("color:#666;")
+        self.phone_hint.setObjectName("muted")
         row2.addWidget(b_detect)
         row2.addWidget(self.phone_hint, 1)
         l2.addLayout(row2)

@@ -7,3 +7,6 @@ data/
 
 # adb 平台工具(体积大,按 README 重新下载解压即可)
 platform-tools/
+
+# IDE 个人配置(解释器路径因平台而异,本地保留即可)
+.vscode/
