@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+
+# adb 平台工具(体积大,按 README 重新下载解压即可)
+platform-tools/
