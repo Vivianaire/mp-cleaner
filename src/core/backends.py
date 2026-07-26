@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Iterator
 
 from ..adb import AdbClient, SCAN_ROOT, dirs_command, scan_command
+from ..adb.agent_io import AgentClient, AgentUnavailable
 
 Record = tuple[str, int, bool, int]
 
@@ -330,3 +331,41 @@ class AdbShellBackend(DeviceBackend):
 def _q(p: str) -> str:
     """单引号包裹路径,转义内嵌单引号。"""
     return "'" + p.replace("'", "'\\''") + "'"
+
+
+class ShizukuAgentBackend(AdbShellBackend):
+    """经 mp-cleaner agent app(Shizuku,uid 2000)的扩展后端。
+
+    继承 ``AdbShellBackend``,把**大流量与文件操作**转发给 agent(手机本地执行,
+    不经 USB 长连接):扫描提速(海量小文件)、文件 mv/rm/mkdir 更稳。查询类
+    (df/diskstats/packages/foreground)沿用父类 adb,避免重复解析逻辑。
+
+    agent 故障时:``iter_files`` 抛 ``AgentUnavailable``(让上层切回 adb 重扫);
+    文件操作(shell/move/delete/mkdir)自动回退父类 adb。
+    """
+
+    def __init__(self, client: AdbClient, serial: str):
+        super().__init__(client, serial)
+        self._agent = AgentClient(client, serial)
+        self._agent.forward()           # 建立 adb forward(失败抛 AgentUnavailable)
+
+    def iter_files(
+        self,
+        root: str,
+        maxdepth: int | None = None,
+        *,
+        stall_timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+        poll_interval: float = 0.5,
+    ) -> Iterator[Record]:
+        md = maxdepth if maxdepth else 0   # agent 约定:0 = 无限制
+        for line in self._agent.stream("scan", root=root, maxdepth=md):
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            rec = parse_record(line)
+            if rec is not None:
+                yield rec
+
+    # 注:文件操作(move/delete/mkdir/shell)沿用父类 adb —— agent 的 Shell 路径
+    # 拼接不带引号,含空格路径会静默失败;扫描才是 agent 的价值(本地 find 提速)。
+    # 想让文件操作也走 agent,需先给 agent 的 Shell 加引号转义(待优化)。

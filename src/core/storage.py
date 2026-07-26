@@ -22,7 +22,9 @@ def db_path_for(serial: str) -> Path:
 class Store:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
-        self.conn = sqlite3.connect(str(self.db_path))
+        # check_same_thread=False:CleanToTrashWorker 等 QThread 会跨线程写(本应用
+        # 各 Worker 串行执行,不会并发写同一连接,故安全)。
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA temp_store=MEMORY")

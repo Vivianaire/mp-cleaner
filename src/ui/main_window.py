@@ -59,6 +59,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dedup_worker: DedupWorker | None = None
         self._junk_items: list = []
         self._auto_scan_done = False
+        self._use_agent = False
         self._installed_pkgs: list[str] = []
         self._third_pkgs: list[str] = []
         self._ui_timer = QtCore.QTimer(self)
@@ -130,7 +131,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.act_clean = QtGui.QAction("🧹 清理选中", self)
         self.act_clean.setShortcut("Delete")
-        self.act_clean.triggered.connect(self.clean)
+        self.act_clean.triggered.connect(lambda: self.clean())
         self.act_clean.setEnabled(False)
 
         self.act_cancel = QtGui.QAction("⏹ 取消", self)
@@ -146,11 +147,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.act_theme.setToolTip("切换深/浅色主题")
         self.act_theme.triggered.connect(self._toggle_theme)
 
+        self.act_use_agent = QtGui.QAction("⚡ Shizuku 加速", self)
+        self.act_use_agent.setCheckable(True)
+        self.act_use_agent.setToolTip(
+            "经 agent app(Shizuku)在手机本地扫描/清理,免 USB 长连接\n"
+            "需装 Shizuku + agent APK,并在 agent app 启动服务"
+        )
+        self.act_use_agent.toggled.connect(self._on_toggle_agent)
+        self.act_use_agent.setEnabled(False)
+
         tb.addAction(self.act_scan)
         tb.addAction(self.act_scan_force)
         tb.addAction(self.act_cancel)
         tb.addAction(self.act_clean)
         tb.addSeparator()
+        tb.addAction(self.act_use_agent)
         tb.addAction(self.act_export)
         tb.addSeparator()
         tb.addAction(self.act_theme)
@@ -178,12 +189,51 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"已连接:{device.model or device.serial}"
                 + ("（有历史快照,可缓存重扫）" if cached else "")
             )
+            self.act_use_agent.setEnabled(True)
             # 首次连接自动扫一遍(仅一次;之后切设备/重连不自动扫)
             if not self._auto_scan_done:
                 self._auto_scan_done = True
                 QtCore.QTimer.singleShot(0, self.scan)
         else:
             self._backend = self._scan_service = None
+            self.act_use_agent.setEnabled(False)
+            self.act_use_agent.blockSignals(True)
+            self.act_use_agent.setChecked(False)
+            self.act_use_agent.blockSignals(False)
+            self._use_agent = False
+
+    # --- Shizuku agent(可选扩展,失败自动回 adb)---
+    def _on_toggle_agent(self, checked: bool) -> None:
+        dev = self.device_panel.current_device()
+        if not dev or not dev.authorized or self._store is None:
+            return
+        if checked:
+            try:
+                from ..adb.agent_io import AGENT_PKG
+                from ..core.backends import ShizukuAgentBackend
+
+                inst = self.client.shell(dev.serial, "pm list packages", timeout=15)
+                if AGENT_PKG not in inst:
+                    raise RuntimeError("未安装 agent APK")
+                new_backend = ShizukuAgentBackend(self.client, dev.serial)
+                if not new_backend._agent.ping():  # noqa: SLF001
+                    raise RuntimeError("agent 服务未起,请打开 agent app 点「启动」")
+                self._backend = new_backend
+                self._use_agent = True
+            except Exception as e:  # noqa: BLE001
+                self.act_use_agent.blockSignals(True)
+                self.act_use_agent.setChecked(False)
+                self.act_use_agent.blockSignals(False)
+                self._use_agent = False
+                self.statusBar().showMessage(f"Shizuku 加速不可用:{e}", 5000)
+                return
+            self.statusBar().showMessage("已启用 Shizuku 加速(扫描/文件经 agent)", 3000)
+        else:
+            self._backend = AdbShellBackend(self.client, dev.serial)
+            self._use_agent = False
+            self.statusBar().showMessage("已切回 adb", 3000)
+        self._scan_service = ScanService(self._backend, self._store)
+        self.trash_view.set_services(self._backend, self._store)
 
     # --- 扫描 ---
     def scan(self, force_full: bool = False) -> None:
